@@ -3,8 +3,8 @@
 # shellcheck disable=SC2086
 
 set -eE
-confhome=https://raw.githubusercontent.com/bin456789/reinstall/main
-confhome_cn=https://cnb.cool/bin456789/reinstall/-/git/raw/main
+confhome=https://raw.githubusercontent.com/nomorebugs123/reinstall/main
+confhome_cn=https://raw.githubusercontent.com/nomorebugs123/reinstall/main
 # confhome_cn=https://www.ghproxy.cc/https://raw.githubusercontent.com/bin456789/reinstall/main
 
 # 默认密码
@@ -3144,7 +3144,6 @@ partman-cros
 partman-iscsi
 partman-jfs
 partman-md
-partman-xfs
 rescue-check
 wpasupplicant-udeb
 lilo-installer
@@ -3161,7 +3160,6 @@ firewire-core-modules-$kver-di
 usb-storage-modules-$kver-di
 isofs-modules-$kver-di
 jfs-modules-$kver-di
-xfs-modules-$kver-di
 loop-modules-$kver-di
 pata-modules-$kver-di
 sata-modules-$kver-di
