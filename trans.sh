@@ -414,22 +414,30 @@ extract_env_from_cmdline() {
 }
 
 ensure_service_started() {
-    service=$1
+    local service=$1
 
-    if ! rc-service -q $service status; then
-        if ! retry 5 rc-service -q $service start; then
-            error_and_exit "Failed to start $service."
-        fi
+    if ! rc-service -q "$service" start; then
+        for i in $(seq 10); do
+            if [ "$service" = modloop ]; then
+                # 避免有时 modloop 下载不完整导致报错
+                # * Failed to verify signature of !
+                # mount: mounting /dev/loop0 on /.modloop failed: Invalid argument
+                rm -f /lib/modloop-lts /lib/modloop-virt
+            fi
+            if rc-service -q "$service" start; then
+                return
+            fi
+            sleep 5
+        done
+        error_and_exit "Failed to start $service."
     fi
 }
 
 ensure_service_stopped() {
-    service=$1
+    local service=$1
 
-    if rc-service -q $service status; then
-        if ! retry 5 rc-service -q $service stop; then
-            error_and_exit "Failed to stop $service."
-        fi
+    if ! retry 10 5 rc-service -q "$service" stop; then
+        error_and_exit "Failed to stop $service."
     fi
 }
 
@@ -1630,9 +1638,9 @@ install_nixos() {
         fi
 
         # 备用方案
-        # 1. 从 https://mirror.nju.edu.cn/nix-channels/nixos-25.05/nixexprs.tar.xz 获取
-        #    https://github.com/NixOS/nixpkgs/blob/nixos-25.05/pkgs/tools/package-management/nix/default.nix
-        #    https://github.com/NixOS/nixpkgs/blob/nixos-25.05/nixos/modules/installer/tools/nix-fallback-paths.nix
+        # 1. 从 https://mirror.nju.edu.cn/nix-channels/nixos-25.11/nixexprs.tar.xz 获取
+        #    https://github.com/NixOS/nixpkgs/blob/nixos-25.11/pkgs/tools/package-management/nix/default.nix
+        #    https://github.com/NixOS/nixpkgs/blob/nixos-25.11/nixos/modules/installer/tools/nix-fallback-paths.nix
         # 2. 安装最新版 nix，添加 nixos channel 后获取
         #    nix eval -f '<nixpkgs>' --raw 'nixVersions.stable.version' --extra-experimental-features nix-command
 
@@ -2431,7 +2439,7 @@ get_disk_logic_sector_size() {
 }
 
 is_4kn() {
-    [ "$(blockdev --getss "$1")" = 4096 ]
+    [ "$(blockdev --getss "/dev/$xda")" = 4096 ]
 }
 
 is_xda_gt_2t() {
@@ -2523,15 +2531,18 @@ create_part() {
         sector_size=$(get_disk_logic_sector_size /dev/$xda)
         total_sector_count=$(get_disk_sector_count /dev/$xda)
 
-        # 截止最后一个分区的总扇区数（也就是总硬盘扇区数 - 备份分区表扇区数）
-        if is_efi; then
-            total_sector_count_except_backup_gpt=$((total_sector_count - 33))
-        else
+        # 截止最后一个分区的总扇区数（也就是总硬盘扇区数 - 备份分区表扇区数 - 备份 GPT Header）
+        if ! is_efi && ! is_xda_gt_2t; then
+            # mbr
             total_sector_count_except_backup_gpt=$total_sector_count
+        elif is_4kn; then
+            total_sector_count_except_backup_gpt=$((total_sector_count - 4 - 1))
+        else
+            total_sector_count_except_backup_gpt=$((total_sector_count - 32 - 1))
         fi
 
         # 向下取整 MiB
-        # gpt 最后 33 个扇区是备份分区表，不可用
+        # gpt 最后 33 (512n/512e) 或 5 (4Kn) 个扇区是备份分区表，不可用
         # parted 结束位置填 100% 时也会忽略最后不足 1MiB 的部分，我们模仿它
         max_can_use_m=$((total_sector_count_except_backup_gpt * sector_size / 1024 / 1024))
 
@@ -2560,9 +2571,20 @@ create_part() {
 
             mkfs.fat /dev/$xda*1                #1 efi
             mkfs.ext4 -F $ext4_opts /dev/$xda*2 #2 os + installer
+        elif is_xda_gt_2t; then
+            # bios > 2t
+            # 官方安装器是 mkpart BOOT 1M 100M，无论 esp 或者 bios_grub 都用这个分区和大小
+            parted /dev/$xda -s -- \
+                mklabel gpt \
+                mkpart BOOT ext4 1MiB 101MiB \
+                mkpart SYSTEM ext4 101MiB $os_part_end \
+                set 1 bios_grub on
+            update_part
+
+            echo                                #1 bios_boot
+            mkfs.ext4 -F $ext4_opts /dev/$xda*2 #2 os + installer
         else
             # bios
-            # 官方安装器不支持 bios + >2t
             parted /dev/$xda -s -- \
                 mklabel msdos \
                 mkpart primary 1MiB 101MiB \
@@ -2756,14 +2778,6 @@ mount_pseudo_fs() {
     fi
 }
 
-get_yq_name() {
-    if grep -q '3\.1[6789]' /etc/alpine-release; then
-        echo yq
-    else
-        echo yq-go
-    fi
-}
-
 create_cloud_init_network_config() {
     ci_file=$1
     recognize_static6=${2:-true}
@@ -2775,7 +2789,7 @@ create_cloud_init_network_config() {
     mkdir -p "$(dirname "$ci_file")"
     touch "$ci_file"
 
-    apk add "$(get_yq_name)"
+    apk add yq-go
 
     need_set_dns4=false
     need_set_dns6=false
@@ -2889,7 +2903,7 @@ create_cloud_init_network_config() {
         yq -i "del(.network.config[$config_id] | select(has(\"address\") | not))" $ci_file
     fi
 
-    apk del "$(get_yq_name)"
+    apk del yq-go
 
     # 查看文件
     info "Cloud-init network config"
@@ -3234,52 +3248,60 @@ chroot_systemctl_disable() {
     done
 }
 
-remove_cloud_init() {
+remove_or_disable_cloud_init() {
     os_dir=$1
 
     if ! is_have_cmd_on_disk $os_dir cloud-init; then
         return
     fi
 
-    info "Remove Cloud-Init"
+    info "Remove or Disable Cloud-Init"
 
-    # 两种方法都可以
-    if false && [ -d $os_dir/etc/cloud ]; then
+    # ubuntu-server-minimal ubuntu-cloud-minimal 都包含 cloud-init
+    # 用 iso 安装的 ubuntu 也有 cloud-init
+    # 因此不删除 ubuntu 的 cloud-init，而是禁用它
+
+    # iso 安装首次启动是通过 /etc/cloud/cloud.cfg.d/99-installer.cfg 初始化系统，包括：
+    #     1. 创建普通用户和密码，添加 ssh 登录公钥
+    #     2. 创建 /etc/cloud/cloud-init.disabled
+
+    if grep -iq ubuntu $os_dir/etc/os-release; then
+        # 模仿 iso 安装的 ubuntu，只创建 cloud-init.disabled，不禁用服务
         touch $os_dir/etc/cloud/cloud-init.disabled
+    else
+        # systemctl is-enabled cloud-init-hotplugd.service 状态是 static
+        # disable 会出现一堆提示信息，也无法 disable
+        for unit in $(
+            chroot $os_dir systemctl list-unit-files |
+                grep -E '^(cloud-init|cloud-init-.*|cloud-config|cloud-final)\.(service|socket)' | grep enabled | awk '{print $1}'
+        ); do
+            # 服务不存在时会报错
+            if chroot $os_dir systemctl -q is-enabled "$unit"; then
+                chroot $os_dir systemctl disable "$unit"
+            fi
+        done
+
+        for pkg_mgr in dnf yum zypper apt-get; do
+            if is_have_cmd_on_disk $os_dir $pkg_mgr; then
+                case $pkg_mgr in
+                dnf | yum)
+                    chroot $os_dir $pkg_mgr remove -y cloud-init
+                    rm -f $os_dir/etc/cloud/cloud.cfg.rpmsave
+                    ;;
+                zypper)
+                    # 加上 -u 才会删除依赖
+                    chroot $os_dir zypper remove -y -u cloud-init cloud-init-config-suse
+                    ;;
+                apt-get)
+                    # ubuntu 25.04 开始有 cloud-init-base
+                    chroot_apt_remove $os_dir cloud-init cloud-init-base
+                    chroot_apt_autoremove $os_dir
+                    ;;
+                esac
+                break
+            fi
+        done
     fi
-
-    # systemctl is-enabled cloud-init-hotplugd.service 状态是 static
-    # disable 会出现一堆提示信息，也无法 disable
-    for unit in $(
-        chroot $os_dir systemctl list-unit-files |
-            grep -E '^(cloud-init-.*|cloud-config|cloud-final)\.(service|socket)' | grep enabled | awk '{print $1}'
-    ); do
-        # 服务不存在时会报错
-        if chroot $os_dir systemctl -q is-enabled "$unit"; then
-            chroot $os_dir systemctl disable "$unit"
-        fi
-    done
-
-    for pkg_mgr in dnf yum zypper apt-get; do
-        if is_have_cmd_on_disk $os_dir $pkg_mgr; then
-            case $pkg_mgr in
-            dnf | yum)
-                chroot $os_dir $pkg_mgr remove -y cloud-init
-                rm -f $os_dir/etc/cloud/cloud.cfg.rpmsave
-                ;;
-            zypper)
-                # 加上 -u 才会删除依赖
-                chroot $os_dir zypper remove -y -u cloud-init
-                ;;
-            apt-get)
-                # ubuntu 25.04 开始有 cloud-init-base
-                chroot_apt_remove $os_dir cloud-init cloud-init-base
-                chroot_apt_autoremove $os_dir
-                ;;
-            esac
-            break
-        fi
-    done
 }
 
 disable_jeos_firstboot() {
@@ -3395,7 +3417,7 @@ EOF
         if [ "$distro" = fedora ] && [ "$releasever" = 43 ]; then
             chroot $os_dir dnf mark user netcat -y
         fi
-        remove_cloud_init $os_dir
+        remove_or_disable_cloud_init $os_dir
 
         disable_selinux $os_dir
         disable_kdump $os_dir
@@ -3422,7 +3444,7 @@ EOF
         find_and_mount /boot
         find_and_mount /boot/efi
 
-        remove_cloud_init $os_dir
+        remove_or_disable_cloud_init $os_dir
 
         # 获取当前开启的 Components, 后面要用
         if [ -f $os_dir/etc/apt/sources.list.d/debian.sources ]; then
@@ -3474,10 +3496,8 @@ EOF
             ! sh /can_use_cloud_kernel.sh "$xda" $(get_eths); then
             kernel_package=$(echo "$kernel_package" | sed 's/-cloud//')
         fi
-        # 如果镜像自带内核跟最佳内核是同一种且有更新
-        # 则 apt install 只会进行更新，不会将包设置成 manual
-        # 需要再运行 apt install 才会将包设置成 manual
-        chroot_apt_install $os_dir "$kernel_package"
+
+        # 该方法包含了 apt-mark manual
         chroot_apt_install $os_dir "$kernel_package"
 
         # 使用 autoremove 删除非最佳内核
@@ -3658,24 +3678,35 @@ EOF
         fi
 
         # rpm -qi 不支持通配符
-        installed_kernel=$(chroot $os_dir rpm -qa 'kernel-*' --qf '%{NAME}\n' | grep -v firmware)
-        if ! [ "$(echo "$installed_kernel" | wc -l)" -eq 1 ]; then
-            error_and_exit "Unexpected kernel installed: $installed_kernel"
+        origin_kernel=$(chroot $os_dir rpm -qa 'kernel-*' --qf '%{NAME}\n' | grep -v firmware)
+        if ! [ "$(echo "$origin_kernel" | wc -l)" -eq 1 ]; then
+            error_and_exit "Unexpected kernel installed: $origin_kernel"
         fi
 
-        # 不能同时装 kernel-default-base 和 kernel-default
+        # 16.0 能同时装 kernel-default-base 和 kernel-default
+        # tw 不能同时装 kernel-default-base 和 kernel-default
         # 因此需要添加 --force-resolution 自动删除 kernel-default-base
-        if ! [ "$installed_kernel" = "$target_kernel" ]; then
+        if ! [ "$origin_kernel" = "$target_kernel" ]; then
             # x86 必须设置一个密码，否则报错，arm 没有这个问题
             # Failed to get root password hash
             # Failed to import /etc/uefi/certs/76B6A6A0.crt
             # warning: %post(kernel-default-5.14.21-150500.55.83.1.x86_64) scriptlet failed, exit status 255
+            need_password_workaround=false
             if grep -q '^root:[:!*]' $os_dir/etc/shadow; then
+                need_password_workaround=true
+            fi
+
+            if $need_password_workaround; then
                 echo "root:$(mkpasswd '')" | chroot $os_dir chpasswd -e
-                chroot $os_dir zypper install -y --force-resolution $target_kernel
+            fi
+            # 安装新内核
+            chroot $os_dir zypper install -y --force-resolution $target_kernel
+            # 删除旧内核
+            if chroot $os_dir rpm -q $origin_kernel; then
+                chroot $os_dir zypper remove -y --force-resolution $origin_kernel
+            fi
+            if $need_password_workaround; then
                 chroot $os_dir passwd -d root
-            else
-                chroot $os_dir zypper install -y --force-resolution $target_kernel
             fi
         fi
 
@@ -3686,7 +3717,7 @@ EOF
 
         # 最后才删除 cloud-init
         # 因为生成 sysconfig 网络配置要用目标系统的 cloud-init
-        remove_cloud_init $os_dir
+        remove_or_disable_cloud_init $os_dir
 
         restore_resolv_conf $os_dir
     fi
@@ -4167,7 +4198,7 @@ chroot_dnf() {
 }
 
 chroot_apt_update() {
-    os_dir=$1
+    local os_dir=$1
 
     current_hash=$(cat $os_dir/etc/apt/sources.list $os_dir/etc/apt/sources.list.d/*.sources 2>/dev/null | md5sum)
     if ! [ "$saved_hash" = "$current_hash" ]; then
@@ -4177,15 +4208,30 @@ chroot_apt_update() {
 }
 
 chroot_apt_install() {
-    os_dir=$1
+    local os_dir=$1
     shift
 
-    chroot_apt_update $os_dir
-    DEBIAN_FRONTEND=noninteractive chroot $os_dir apt-get install -y "$@"
+    # 只安装未安装的软件包
+    # 避免更新浪费时间
+    local pkg='' pkgs=''
+    for pkg in "$@"; do
+        if chroot $os_dir dpkg -s "$pkg" >/dev/null 2>&1; then
+            # 如果已安装则标记为 manual，防止被 autoremove 删除
+            chroot $os_dir apt-mark manual "$pkg"
+        else
+            pkgs="$pkgs $pkg"
+        fi
+    done
+
+    # 一次性安装，避免多次 update-initramfs
+    if [ -n "$pkgs" ]; then
+        chroot_apt_update $os_dir
+        DEBIAN_FRONTEND=noninteractive chroot $os_dir apt-get install -y $pkgs
+    fi
 }
 
 chroot_apt_remove() {
-    os_dir=$1
+    local os_dir=$1
     shift
 
     # minimal 镜像 删除 grub-pc 时会安装 grub-efi-amd64
@@ -4208,7 +4254,7 @@ chroot_apt_remove() {
 }
 
 chroot_apt_autoremove() {
-    os_dir=$1
+    local os_dir=$1
 
     change_confs() {
         action=$1
@@ -4299,7 +4345,14 @@ install_fnos() {
     mkdir -p $initrd_dir
     (
         cd $initrd_dir
-        zcat /iso/install.amd/initrd.gz | cpio -idm
+        suffix=$(
+            case $(uname -m) in
+            x86_64) echo amd ;;
+            aarch64) echo a64 ;;
+            *) ;;
+            esac
+        )
+        zcat /iso/install.$suffix/initrd.gz | cpio -idm
     )
     apk del cpio
 
@@ -4335,9 +4388,6 @@ install_fnos() {
     # 挂载 proc sys dev
     mount_pseudo_fs /os
 
-    # 更新 initrd
-    # chroot $os_dir update-initramfs -u
-
     # 更改密码
     if is_need_set_ssh_keys; then
         set_ssh_keys_and_del_password $os_dir
@@ -4351,6 +4401,31 @@ install_fnos() {
         chroot $os_dir systemctl enable ssh
     fi
 
+    # fstab
+    {
+        # /
+        uuid=$(lsblk /dev/$xda*2 -no UUID)
+        echo "$fstab_line_os" | sed "s/%s/$uuid/"
+
+        # swapfile
+        # 官方安装器即使 swapfile 设为 0 也会有这行
+        echo "$fstab_line_swapfile"
+
+        # /boot/efi
+        if is_efi; then
+            uuid=$(lsblk /dev/$xda*1 -no UUID)
+            echo "$fstab_line_efi" | sed "s/%s/$uuid/"
+        fi
+    } >$os_dir/etc/fstab
+
+    # 更新 initrd，官方安装器也有这一步
+    # 理论上 /var/tmp 要设置 1777 权限，但飞牛官方安装器安装后不是
+    # 需要先创建 /etc/fstab ，否则会有以下警告
+    # W: Couldn't identify type of root file system for fsck hook
+    mkdir -p $os_dir/var/tmp
+    chmod 1777 $os_dir/var/tmp
+    chroot $os_dir update-initramfs -u
+
     # grub
     if is_efi; then
         chroot $os_dir grub-install --efi-directory=/boot/efi
@@ -4359,27 +4434,15 @@ install_fnos() {
         chroot $os_dir grub-install /dev/$xda
     fi
 
+    # grub 配置
+    # 取自 strings trim-install | grep GRUB_DISTRIBUTOR
+    sed -i 's/^GRUB_DISTRIBUTOR=.*/GRUB_DISTRIBUTOR="FNOS"/' $os_dir/etc/default/grub
+
     # grub tty
     ttys_cmdline=$(get_ttys console=)
-    echo GRUB_CMDLINE_LINUX=\"\$GRUB_CMDLINE_LINUX $ttys_cmdline\" \
-        >>$os_dir/etc/default/grub.d/tty.cfg
+    echo GRUB_CMDLINE_LINUX=\"\$GRUB_CMDLINE_LINUX $ttys_cmdline\" >$os_dir/etc/default/grub.d/tty.cfg
+
     chroot $os_dir update-grub
-
-    # fstab
-    {
-        # /
-        uuid=$(lsblk /dev/$xda*2 -no UUID)
-        echo "$fstab_line_os" | sed "s/%s/$uuid/"
-
-        # 官方安装器即使 swapfile 设为 0 也会有这行
-        echo "$fstab_line_swapfile" | sed "s/%s/$uuid/"
-
-        # /boot/efi
-        if is_efi; then
-            uuid=$(lsblk /dev/$xda*1 -no UUID)
-            echo "$fstab_line_efi" | sed "s/%s/$uuid/"
-        fi
-    } >$os_dir/etc/fstab
 
     # 网卡配置
     create_cloud_init_network_config /net.cfg
@@ -4740,10 +4803,13 @@ EOF
         # 安装最佳内核
         flavor=$(get_ubuntu_kernel_flavor)
         echo "Use kernel flavor: $flavor"
-        # 如果镜像自带内核跟最佳内核是同一种且有更新
-        # 则 apt install 只会进行更新，不会将包设置成 manual
-        # 需要再运行 apt install 才会将包设置成 manual
-        chroot_apt_install $os_dir "linux-image-$flavor"
+
+        # 题外话
+        # 如果某个包是 auto 状态且有更新
+        # 则 apt install PKG 只会进行更新，不会将包设置成 manual
+        # 需要再次运行 apt install PKG 才会将包设置成 manual
+
+        # 该方法包含了 apt-mark manual
         chroot_apt_install $os_dir "linux-image-$flavor"
 
         # 使用 autoremove 删除多余内核
@@ -5079,7 +5145,7 @@ EOF
 
     # 最后才删除 cloud-init
     # 因为生成 netplan/sysconfig 网络配置要用目标系统的 cloud-init
-    remove_cloud_init /os
+    remove_or_disable_cloud_init /os
 
     # 删除 swapfile
     swapoff -a
@@ -5545,12 +5611,6 @@ is_list_has() {
     echo "$list" | grep -qFx "$item"
 }
 
-# hivexget 是 shell 脚本，开头是 #!/bin/bash
-# 但 alpine 没安装 bash，直接运行 hivexget 会报错
-hivexget() {
-    ash "$(which hivexget)" "$@"
-}
-
 get_windows_type_from_windows_drive() {
     local os_dir=$1
 
@@ -6004,8 +6064,18 @@ install_windows() {
                     echo https://downloadmirror.intel.com/849483/Wired_driver_30.0.1_${arch_intel}.zip
                     ;;
                 x64)
+                    id=$(
+                        case "$product_ver" in
+                        10) echo 18293 ;;
+                        11) echo 727998 ;;
+                        2016) echo 18737 ;;
+                        2019) echo 19372 ;;
+                        2022) echo 706171 ;;
+                        2025) echo 838943 ;;
+                        esac
+                    )
                     # intel 禁止了 wget 下载网页
-                    wget -U curl/7.54.1 https://www.intel.com/content/www/us/en/download/727998.html -O- |
+                    wget -U curl/7.54.1 https://www.intel.com/content/www/us/en/download/$id.html -O- |
                         grep -Eio -m1 "\"https://.+/(Wired_driver|prowin).*${arch_intel}(legacy)?\.(zip|exe)\"" | tr -d '"' | grep .
                     ;;
                 esac ;;
@@ -6791,7 +6861,7 @@ EOF
 
     # 4kn EFI 分区最少要 260M
     # https://learn.microsoft.com/windows-hardware/manufacture/desktop/hard-drives-and-partitions
-    if is_4kn /dev/$xda; then
+    if is_4kn; then
         sed -i 's/is4kn=0/is4kn=1/i' $startnet_cmd
     fi
 

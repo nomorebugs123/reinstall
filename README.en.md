@@ -4,7 +4,8 @@
 
 [![Codacy](https://img.shields.io/codacy/grade/dc679a17751448628fe6d8ac35e26eed?logo=Codacy&label=Codacy&style=flat-square)](https://app.codacy.com/gh/bin456789/reinstall/dashboard)
 [![CodeFactor](https://img.shields.io/codefactor/grade/github/bin456789/reinstall?logo=CodeFactor&logoColor=white&label=CodeFactor&style=flat-square)](https://www.codefactor.io/repository/github/bin456789/reinstall)
-[![Lines of Code](https://tokei.rs/b1/github/bin456789/reinstall?category=code&label=Lines%20of%20Code&style=flat-square)](https://github.com/XAMPPRocky/tokei_rs)
+[![Lines of Code](https://aschey.tech/tokei/github/bin456789/reinstall?category=code&label=Lines%20of%20Code&style=flat-square)](https://github.com/aschey/vercel-tokei)
+<!-- [![Lines of Code](https://tokei.rs/b1/github/bin456789/reinstall?category=code&label=Lines%20of%20Code&style=flat-square)](https://github.com/XAMPPRocky/tokei_rs) -->
 
 One-Click system reinstallation script for VPS [中文](README.md)
 
@@ -34,7 +35,7 @@ If this helped you, you can buy me a milk tea.
 - [Download](#download-current-system-is--linux)
 - [Feature 1. One-click reinstallation to Linux](#feature-1-install--linux)
 - [Feature 2. One-click DD Raw image to hard disk](#feature-2-dd-raw-image-to-hard-disk)
-- [Feature 3. One-click reboot to Alpine Live OS in-memory system](#feature-3-reboot-to--alpine-live-os-ram-os)
+- [Feature 3. One-click reboot to Alpine Live OS](#feature-3-reboot-to--alpine-live-os)
 - [Feature 4. One-click reboot to netboot.xyz](#feature-4-reboot-to--netbootxyz)
 - [Feature 5. One-click reinstallation to Windows](#feature-5-install--windows-iso)
 
@@ -46,7 +47,7 @@ The system requirements for the target system are as follows:
 
 | System                                                                                                                                                                                                                                                                                                                                                                 | Version                               | Memory    | Disk             |
 | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- | --------- | ---------------- |
-| <img width="16" height="16" src="https://www.alpinelinux.org/alpine-logo.ico" /> Alpine                                                                                                                                                                                                                                                                                | 3.19, 3.20, 3.21, 3.22                | 256 MB    | 1 GB             |
+| <img width="16" height="16" src="https://www.alpinelinux.org/alpine-logo.ico" /> Alpine                                                                                                                                                                                                                                                                                | 3.20, 3.21, 3.22, 3.23                | 256 MB    | 1 GB             |
 | <img width="16" height="16" src="https://www.debian.org/favicon.ico" /> Debian                                                                                                                                                                                                                                                                                         | 9, 10, 11, 12, 13                     | 256 MB    | 1 ~ 1.5 GB ^     |
 | <img width="16" height="16" src="https://github.com/bin456789/reinstall/assets/7548515/f74b3d5b-085f-4df3-bcc9-8a9bd80bb16d" /> Kali                                                                                                                                                                                                                                   | Rolling                               | 256 MB    | 1 ~ 1.5 GB ^     |
 | <img width="16" height="16" src="https://documentation.ubuntu.com/server/_static/favicon.png" /> Ubuntu                                                                                                                                                                                                                                                                | 16.04 LTS - 24.04 LTS, 25.10          | 512 MB \* | 2 GB             |
@@ -57,11 +58,11 @@ The system requirements for the target system are as follows:
 | <img width="16" height="16" src="https://fedoraproject.org/favicon.ico" /> Fedora                                                                                                                                                                                                                                                                                      | 42, 43                                | 512 MB \* | 5 GB             |
 | <img width="16" height="16" src="https://www.openeuler.org/favicon.ico" /> openEuler                                                                                                                                                                                                                                                                                   | 20.03 LTS - 24.03 LTS, 25.09          | 512 MB \* | 5 GB             |
 | <img width="16" height="16" src="https://static.opensuse.org/favicon.ico" /> openSUSE                                                                                                                                                                                                                                                                                  | Leap 15.6, 16.0, Tumbleweed (Rolling) | 512 MB \* | 5 GB             |
-| <img width="16" height="16" src="https://nixos.org/favicon.svg" /> NixOS                                                                                                                                                                                                                                                                                               | 25.05                                 | 512 MB    | 5 GB             |
+| <img width="16" height="16" src="https://nixos.org/favicon.svg" /> NixOS                                                                                                                                                                                                                                                                                               | 25.11                                 | 512 MB    | 5 GB             |
 | <img width="16" height="16" src="https://archlinux.org/static/favicon.png" /> Arch                                                                                                                                                                                                                                                                                     | Rolling                               | 512 MB    | 5 GB             |
 | <img width="16" height="16" src="https://www.gentoo.org/assets/img/logo/gentoo-g.png" /> Gentoo                                                                                                                                                                                                                                                                        | Rolling                               | 512 MB    | 5 GB             |
 | <img width="16" height="16" src="https://aosc.io/distros/aosc-os.svg" /> AOSC OS                                                                                                                                                                                                                                                                                       | Rolling                               | 512 MB    | 5 GB             |
-| <img width="16" height="16" src="https://www.fnnas.com/favicon.ico" /> fnOS                                                                                                                                                                                                                                                                                            | Beta                                  | 512 MB    | 8 GB             |
+| <img width="16" height="16" src="https://www.fnnas.com/favicon.ico" /> fnOS                                                                                                                                                                                                                                                                                            | 1                                     | 512 MB    | 8 GB             |
 | <img width="16" height="16" src="https://blogs.windows.com/wp-content/uploads/prod/2022/09/cropped-Windows11IconTransparent512-32x32.png" /> Windows (DD)                                                                                                                                                                                                              | Any                                   | 512 MB    | Depends on image |
 | <img width="16" height="16" src="https://blogs.windows.com/wp-content/uploads/prod/2022/09/cropped-Windows11IconTransparent512-32x32.png" /> Windows (ISO)                                                                                                                                                                                                             | Vista, 7, 8.x (Server 2008 - 2012 R2) | 512 MB    | 25 GB            |
 | <img width="16" height="16" src="https://blogs.windows.com/wp-content/uploads/prod/2022/09/cropped-Windows11IconTransparent512-32x32.png" /> Windows (ISO)                                                                                                                                                                                                             | 10, 11 (Server 2016 - 2025)           | 1 GB      | 25 GB            |
@@ -149,7 +150,7 @@ certutil -urlcache -f -split https://cnb.cool/bin456789/reinstall/-/git/raw/main
 - When installing the latest version, the version number does not need to be specified.
 - Maximizes disk space usage: no boot partition (except for Fedora) and no swap partition.
 - Automatically selects different optimized kernels based on machine type, such as `Cloud` or `HWE` kernels.
-- When installing Red Hat, you must provide the `qcow2` image link obtained from <https://access.redhat.com/downloads/content/rhel>. You can also install other RHEL-based OS, such as `Alibaba Cloud Linux` and `TencentOS Server`.
+- When installing Red Hat, you must provide the `qcow2` image link obtained from <https://access.redhat.com/downloads/content/rhel>. You can also install `qcow2` of other RHEL-based OS, such as `Alibaba Cloud Linux` and `TencentOS Server`.
 - After reinstallation, if you need to change the SSH port or switch to key-based login, make sure to also modify the files inside `/etc/ssh/sshd_config.d/`.
 
 ```bash
@@ -159,10 +160,11 @@ bash reinstall.sh anolis      7|8|23
                   almalinux   8|9|10
                   opencloudos 8|9|23
                   centos      9|10
+                  fnos        1
+                  nixos       25.11
                   fedora      42|43
-                  nixos       25.05
                   debian      9|10|11|12|13
-                  alpine      3.19|3.20|3.21|3.22
+                  alpine      3.20|3.21|3.22|3.23
                   opensuse    15.6|16.0|tumbleweed
                   openeuler   20.03|22.03|24.03|25.09
                   ubuntu      16.04|18.04|20.04|22.04|24.04|25.10 [--minimal]
@@ -170,7 +172,6 @@ bash reinstall.sh anolis      7|8|23
                   arch
                   gentoo
                   aosc
-                  fnos
                   redhat      --img="http://access.cdn.redhat.com/xxx.qcow2"
 ```
 
@@ -258,7 +259,7 @@ bash reinstall.sh dd --img "https://example.com/xxx.xz"
 >
 > Or Run `/trans.sh alpine` to automatically recover to Alpine Linux.
 
-### Feature 3: Reboot to <img width="16" height="16" src="https://www.alpinelinux.org/alpine-logo.ico" /> Alpine Live OS (RAM OS)
+### Feature 3: Reboot to <img width="16" height="16" src="https://www.alpinelinux.org/alpine-logo.ico" /> Alpine Live OS
 
 - You can use SSH to backup/restore disk, manually perform DD operations, partition modifications, manual Alpine installation, and other operations.
 - Username `root`. The script prompts for a password. If left blank, a random one is generated.
@@ -266,7 +267,7 @@ bash reinstall.sh dd --img "https://example.com/xxx.xz"
 > [!TIP]
 >
 > Although the script being run is `reinstall`, this feature **does not** delete any data or perform an automatic reinstallation; manual user operation is required.
-
+>
 > If the user does not damage the original system during manual operation, rebooting will return to the original system.
 
 ```bash
@@ -287,7 +288,7 @@ bash reinstall.sh alpine --hold 1
 > [!TIP]
 >
 > Although the script being run is `reinstall`, this feature **does not** delete any data or perform an automatic reinstallation; manual user operation is required.
-
+>
 > If the user does not damage the original system during manual operation, rebooting will return to the original system.
 
 ```bash

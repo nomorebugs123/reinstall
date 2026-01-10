@@ -22,6 +22,22 @@ export LC_ALL=C
 # 不要漏了最后的 $PATH，否则会找不到 windows 系统程序例如 diskpart
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH
 
+# 如果不是 bash 的话，继续执行会有语法错误，因此在这里判断是否 bash
+if [ -z "$BASH" ]; then
+    if [ -f /etc/alpine-release ]; then
+        if ! apk add bash; then
+            echo "Error while install bash." >&2
+            exit 1
+        fi
+    fi
+    if command -v bash >/dev/null; then
+        exec bash "$0" "$@"
+    else
+        echo "Please run this script with bash." >&2
+        exit 1
+    fi
+fi
+
 # 记录日志，过滤含有 password 的行
 exec > >(tee >(grep -iv password >>/reinstall.log)) 2>&1
 THIS_SCRIPT=$(readlink -f "$0")
@@ -34,11 +50,6 @@ trap_err() {
     error "Line $line_no return $ret_no"
     sed -n "$line_no"p "$THIS_SCRIPT"
 }
-
-if ! { [ -n "$BASH" ] && [ -n "$BASH_VERSION" ]; }; then
-    echo "Please run this script with bash." >&2
-    exit 1
-fi
 
 usage_and_exit() {
     if is_in_windows; then
@@ -53,10 +64,11 @@ Usage: $reinstall_____ anolis      7|8|23
                        oracle      8|9|10
                        almalinux   8|9|10
                        centos      9|10
+                       fnos        1
+                       nixos       25.11
                        fedora      42|43
-                       nixos       25.05
                        debian      9|10|11|12|13
-                       alpine      3.19|3.20|3.21|3.22
+                       alpine      3.20|3.21|3.22|3.23
                        opensuse    15.6|16.0|tumbleweed
                        openeuler   20.03|22.03|24.03|25.09
                        ubuntu      16.04|18.04|20.04|22.04|24.04|25.10 [--minimal]
@@ -64,7 +76,6 @@ Usage: $reinstall_____ anolis      7|8|23
                        arch
                        gentoo
                        aosc
-                       fnos
                        redhat      --img="http://access.cdn.redhat.com/xxx.qcow2"
                        dd          --img="http://xxx.com/yyy.zzz" (raw image stores in raw/vhd/tar/gz/xz/zst)
                        windows     --image-name="windows xxx yyy" --lang=xx-yy
@@ -909,7 +920,7 @@ get_windows_iso_link() {
                     esac
                     ;;
                 homebasic | homepremium | ultimate) echo _ ;;
-                business | enterprise) "$edition" ;;
+                business | enterprise) echo "$edition" ;;
                 esac
                 ;;
             7)
@@ -1075,7 +1086,10 @@ get_windows_iso_link() {
     if [ -n "$label_msdl" ]; then
         iso=$(curl -L "$page_url" | grep -ioP 'https://[^ ]+?#[0-9]+' | head -1 | grep .)
     else
-        curl -L "$page_url" | grep -ioP 'https://[^ ]+?.(iso|img)' >$tmp/win.list
+        curl -L "$page_url" |
+            tr -d '\n' | sed -e 's,<a ,\n<a ,g' -e 's,</a>,</a>\n,g' |    # 使每个 <a></a> 占一行
+            grep -Ei '\.(iso|img)</a>$' |                                 # 找出是 iso 或 img 的行
+            sed -E 's,<a href="([^"]+)".+>(.+)</a>,\2 \1,' >$tmp/win.list # 提取文件名和链接
 
         # 如果不是 ltsc ，应该先去除 ltsc 链接，否则最终链接有 ltsc 的
         # 例如查找 windows 10 iot enterprise，会得到
@@ -1093,8 +1107,12 @@ get_windows_iso_link() {
 }
 
 get_shortest_line() {
-    # awk '{print length($0), $0}' | sort -n | head -1 | awk '{print $2}'
     awk '(NR == 1 || length($0) < length(shortest)) { shortest = $0 } END { print shortest }'
+}
+
+get_shortest_line_by_field() {
+    local field=$1
+    awk "(NR == 1 || length(\$$field) < length(field)) { line = \$0; field = \$$field } END { print line }"
 }
 
 get_windows_iso_link_inner() {
@@ -1128,7 +1146,9 @@ get_windows_iso_link_inner() {
         regex=${regex// /_}
 
         echo "looking for: $regex" >&2
-        if iso=$(grep -Ei "/$regex" "$tmp/win.list" | get_shortest_line | grep .); then
+        if line=$(grep -Ei "^$regex " "$tmp/win.list" | get_shortest_line_by_field 1 | grep .) &&
+            iso=$(awk '{print $2}' <<<"$line" | grep .); then
+            echo "Selected: $line" >&2
             return
         fi
     done
@@ -1487,8 +1507,8 @@ Continue?
             dir=distribution/leap/$releasever/appliances
             case "$releasever" in
             15.6) file=openSUSE-Leap-$releasever-Minimal-VM.$basearch-Cloud.qcow2 ;;
-            # 16.0) file=Leap-$releasever-Minimal-VM.$basearch-Cloud.qcow2 ;; # 缺少 openSUSE-repos-Leap 包，导致没有源
-            16.0) file=Leap-$releasever-Minimal-VM.$basearch-kvm$(if [ "$basearch" = x86_64 ]; then echo '-and-xen'; fi).qcow2 ;;
+            16.0) file=Leap-$releasever-Minimal-VM.$basearch-Cloud.qcow2 ;;
+            # 16.0) file=Leap-$releasever-Minimal-VM.$basearch-kvm$(if [ "$basearch" = x86_64 ]; then echo '-and-xen'; fi).qcow2 ;;
             esac
 
             # https://src.opensuse.org/openSUSE/Leap-Images/src/branch/leap-16.0/kiwi-templates-Minimal/Minimal.kiwi
@@ -1501,7 +1521,9 @@ Continue?
     }
 
     setos_windows() {
+        auto_find_iso=false
         if [ -z "$iso" ]; then
+            auto_find_iso=true
             # 查找时将 windows longhorn serverdatacenter 改成 windows server 2008 serverdatacenter
             image_name=${image_name/windows longhorn server/windows server 2008 server}
             echo "iso url is not set. Attempting to find it automatically."
@@ -1516,27 +1538,32 @@ Continue?
         if [[ "$iso" = magnet:* ]]; then
             : # 不测试磁力链接
         else
-            # 需要用户输入 massgrave.dev 直链
-            if grep -Eiq '\.massgrave\.dev/.*\.(iso|img)$' <<<"$iso" ||
-                grep -Eiq '\.gravesoft\.dev/#[0-9]+$' <<<"$iso"; then
-                info "Set Direct link"
-                # MobaXterm 不支持
-                # printf '\e]8;;http://example.com\e\\This is a link\e]8;;\e\\\n'
+            iso_is_tested=false
+            if $auto_find_iso; then
+                if test_url_grace "$iso" iso 2>/dev/null; then
+                    iso_is_tested=true
+                else
+                    # 需要用户输入 massgrave.dev 直链
+                    info "Set Direct link"
+                    # MobaXterm 不支持
+                    # printf '\e]8;;http://example.com\e\\This is a link\e]8;;\e\\\n'
 
-                # MobaXterm 不显示为超链接
-                # info false "请在浏览器中打开 $iso 获取直链并粘贴到这里。"
-                # info false "Please open $iso in browser to get the direct link and paste it here."
+                    # MobaXterm 不显示为超链接
+                    # info false "请在浏览器中打开 $iso 获取直链并粘贴到这里。"
+                    # info false "Please open $iso in browser to get the direct link and paste it here."
 
-                echo "请在浏览器中打开 $iso 获取直链并粘贴到这里。"
-                echo "Please open $iso in browser to get the direct link and paste it here."
-                IFS= read -r -p "Direct Link: " iso
-                if [ -z "$iso" ]; then
-                    error_and_exit "ISO Link is empty."
+                    echo "请在浏览器中打开 $iso 获取直链并粘贴到这里。"
+                    echo "Please open $iso in browser to get the direct link and paste it here."
+                    IFS= read -r -p "Direct Link: " iso
+                    if [ -z "$iso" ]; then
+                        error_and_exit "ISO Link is empty."
+                    fi
                 fi
             fi
 
-            # 测试是否是 iso
-            test_url "$iso" iso
+            if ! $iso_is_tested; then
+                test_url "$iso" iso
+            fi
 
             # 判断 iso 架构是否兼容
             # https://gitlab.com/libosinfo/osinfo-db/-/tree/main/data/os/microsoft.com?ref_type=heads
@@ -1611,15 +1638,13 @@ Continue with DD?
     }
 
     setos_fnos() {
-        if [ "$basearch" = aarch64 ]; then
-            error_and_exit "FNOS not supports ARM."
-        fi
-
         # 系统盘大小
         min=8
         default=8
+        echo "请输入系统分区大小，最小 $min GB，但可能无法更新系统。"
+        echo "Please input System Partition Size. Minimal is $min GB but may not be able to do system updates."
         while true; do
-            IFS= read -r -p "Type System Partition Size in GB. Minimal $min GB. [$default]: " input
+            IFS= read -r -p "Size in GB [$default]: " input
             input=${input:-$default}
             if ! { is_digit "$input" && [ "$input" -ge "$min" ]; }; then
                 error "Invalid Size. Please Try again."
@@ -1629,16 +1654,25 @@ Continue with DD?
             fi
         done
 
-        iso=$(curl -L https://fnnas.com/ | grep -o 'https://[^"]*\.iso' | head -1 | grep .)
+        if [ "$basearch" = aarch64 ]; then
+            if [ -z "$iso" ]; then
+                IFS= read -r -p "ISO Link: " iso
+                if [ -z "$iso" ]; then
+                    error_and_exit "ISO Link is empty."
+                fi
+            fi
+        else
+            iso=$(curl -L https://fnnas.com/ | grep -o -m1 'https://[^"]*\.iso')
 
-        # curl 7.82.0+
-        # curl -L --json '{"url":"'$iso'"}' https://www.fnnas.com/api/download-sign
+            # curl 7.82.0+
+            # curl -L --json '{"url":"'$iso'"}' https://www.fnnas.com/api/download-sign
 
-        iso=$(curl -L \
-            -d '{"url":"'$iso'"}' \
-            -H 'Content-Type: application/json' \
-            https://www.fnnas.com/api/download-sign |
-            grep -o 'https://[^"]*')
+            iso=$(curl -L \
+                -d '{"url":"'$iso'"}' \
+                -H 'Content-Type: application/json' \
+                https://www.fnnas.com/api/download-sign |
+                grep -o 'https://[^"]*')
+        fi
 
         test_url "$iso" iso
         eval "${step}_iso='$iso'"
@@ -1907,11 +1941,12 @@ verify_os_name() {
         'almalinux   8|9|10' \
         'rocky       8|9|10' \
         'oracle      8|9|10' \
+        'fnos        1' \
         'fedora      42|43' \
-        'nixos       25.05' \
+        'nixos       25.11' \
         'debian      9|10|11|12|13' \
         'opensuse    15.6|16.0|tumbleweed' \
-        'alpine      3.19|3.20|3.21|3.22' \
+        'alpine      3.20|3.21|3.22|3.23' \
         'openeuler   20.03|22.03|24.03|25.09' \
         'ubuntu      16.04|18.04|20.04|22.04|24.04|25.10' \
         'redhat' \
@@ -1919,7 +1954,6 @@ verify_os_name() {
         'arch' \
         'gentoo' \
         'aosc' \
-        'fnos' \
         'windows' \
         'dd' \
         'netboot.xyz'; do
