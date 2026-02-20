@@ -305,6 +305,10 @@ get_host_by_url() {
     cut -d/ -f3 <<<$1
 }
 
+get_scheme_and_host_by_url() {
+    cut -d/ -f1-3 <<<$1
+}
+
 get_function() {
     declare -f "$1"
 }
@@ -882,8 +886,14 @@ find_windows_iso() {
     full_lang=$(english)
 
     case "$basearch" in
-    x86_64) arch_win=x64 ;;
-    aarch64) arch_win=arm64 ;;
+    x86_64)
+        arch_win=x64
+        arch_win_vlsc=64bit
+        ;;
+    aarch64)
+        arch_win=arm64
+        arch_win_vlsc=arm64
+        ;;
     esac
 
     get_windows_iso_link
@@ -1009,6 +1019,9 @@ get_windows_iso_link() {
             pro | education | enterprise | 'pro education' | 'pro for workstations') echo pro ;;
             esac
             ;;
+        2025)
+            echo SrvSTDCORE
+            ;;
         esac
     }
 
@@ -1086,10 +1099,17 @@ get_windows_iso_link() {
     if [ -n "$label_msdl" ]; then
         iso=$(curl -L "$page_url" | grep -ioP 'https://[^ ]+?#[0-9]+' | head -1 | grep .)
     else
+        http_to_host=$(get_scheme_and_host_by_url "$page_url")
+        http_to_current_dir=$(dirname "$page_url")
         curl -L "$page_url" |
-            tr -d '\n' | sed -e 's,<a ,\n<a ,g' -e 's,</a>,</a>\n,g' |    # 使每个 <a></a> 占一行
-            grep -Ei '\.(iso|img)</a>$' |                                 # 找出是 iso 或 img 的行
-            sed -E 's,<a href="([^"]+)".+>(.+)</a>,\2 \1,' >$tmp/win.list # 提取文件名和链接
+            tr -d '\n' | sed -e 's,<a ,\n<a ,g' -e 's,</a>,</a>\n,g' | # 使每个 <a></a> 占一行
+            grep -Ei '\.(iso|img)</a>$' |                              # 找出是 iso 或 img 的行
+            # 提取文件名和链接
+            # 如果链接是 / 开头，则补全域名
+            # 如果链接非 https:// 开头，则补全域名和目录
+            sed -E -e 's,<a href="?([^" ]+)"?.+>(.+)</a>,\2 \1,' \
+                -e "s, (/), $http_to_host\1," |
+            awk '{if ($2 !~ /^https?:\/\//) $2 = "'$http_to_current_dir/'" $2; print}' >$tmp/win.list
 
         # 如果不是 ltsc ，应该先去除 ltsc 链接，否则最终链接有 ltsc 的
         # 例如查找 windows 10 iot enterprise，会得到
@@ -1136,8 +1156,11 @@ get_windows_iso_link_inner() {
     fi
 
     # vlsc
+    # SW_DVD5_Win_10_IOT_Enterprise_2015_LTSB_64Bit_EMB_English_OEM_X20-20063.IMG
+    # SW_DVD9_Win_Pro_10_22H2.15_Arm64_English_Pro_Ent_EDU_N_MLF_X23-67223.ISO
+    # SWDVD9_WinSrvSTDCORE2025_24H2.16_64Bit_English_DC_STD_MLF_RTMUpdJan26_X24-26760.iso
     if [ -n "$label_vlsc" ]; then
-        regex="sw_dvd[59]_win_${label_vlsc}_${version}.*${arch_win}_${full_lang}.*.(iso|img)"
+        regex="sw_?dvd[59]_win_?${label_vlsc}_?${version}.*${arch_win_vlsc}_${full_lang}.*.(iso|img)"
         regexs+=("$regex")
     fi
 
@@ -1654,25 +1677,18 @@ Continue with DD?
             fi
         done
 
-        if [ "$basearch" = aarch64 ]; then
-            if [ -z "$iso" ]; then
-                IFS= read -r -p "ISO Link: " iso
-                if [ -z "$iso" ]; then
-                    error_and_exit "ISO Link is empty."
-                fi
-            fi
-        else
-            iso=$(curl -L https://fnnas.com/ | grep -o -m1 'https://[^"]*\.iso')
+        # 对于同一行有多个成功匹配，grep -m1 无效
+        iso=$(curl -L "https://fnnas.com/download$([ "$basearch" = aarch64 ] && echo -arm)" |
+            grep -o 'https://[^"]*\.iso' | head -1 | grep .)
 
-            # curl 7.82.0+
-            # curl -L --json '{"url":"'$iso'"}' https://www.fnnas.com/api/download-sign
+        # curl 7.82.0+
+        # curl -L --json '{"url":"'$iso'"}' https://www.fnnas.com/api/download-sign
 
-            iso=$(curl -L \
-                -d '{"url":"'$iso'"}' \
-                -H 'Content-Type: application/json' \
-                https://www.fnnas.com/api/download-sign |
-                grep -o 'https://[^"]*')
-        fi
+        iso=$(curl -L \
+            -d '{"url":"'$iso'"}' \
+            -H 'Content-Type: application/json' \
+            https://www.fnnas.com/api/download-sign |
+            grep -o 'https://[^"]*')
 
         test_url "$iso" iso
         eval "${step}_iso='$iso'"
@@ -3744,6 +3760,22 @@ This script is outdated, please download reinstall.sh again.
         cat "$frpc_config" >$initrd_dir/configs/frpc.toml
     fi
 
+    # 收集 cloud-data 打包进 initrd
+    if [ -n "$cloud_data" ]; then
+        mkdir -p $initrd_dir/configs/cloud-data
+        if [ -d "$cloud_data" ]; then
+            # 本地目录：直接复制
+            cp "$cloud_data"/* $initrd_dir/configs/cloud-data/
+        else
+            # URL：在 host 下载
+            for f in user-data meta-data network-config; do
+                curl -fsSL "$cloud_data/$f" -o "$initrd_dir/configs/cloud-data/$f" 2>/dev/null || true
+            done
+        fi
+        # 校验：至少要有 user-data
+        [ -f $initrd_dir/configs/cloud-data/user-data ] || error_and_exit "--cloud-data must contain user-data"
+    fi
+
     if is_distro_like_debian $nextos_distro; then
         mod_initrd_debian_kali
     else
@@ -3910,6 +3942,7 @@ for o in ci installer debug minimal allow-ping force-cn help \
     image-name: \
     boot-wim: \
     img: \
+    cloud-data: \
     lang: \
     passwd: password: \
     ssh-port: \
@@ -4143,6 +4176,10 @@ EOF
         ;;
     --img)
         img=$2
+        shift 2
+        ;;
+    --cloud-data)
+        cloud_data=$2
         shift 2
         ;;
     --iso)
