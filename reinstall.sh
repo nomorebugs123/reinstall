@@ -3559,6 +3559,7 @@ exit_if_cant_use_cloud_kernel() {
 }
 
 can_use_cloud_kernel() {
+    return 1
     # initrd 下也要使用，不要用 <<<
 
     # 有些虚拟机用了 ahci，但云内核没有 ahci 驱动
