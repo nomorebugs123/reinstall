@@ -1,6 +1,6 @@
 #!/bin/ash
 # shellcheck shell=dash
-# shellcheck disable=SC2086,SC3047,SC3036,SC3010,SC3001,SC3060
+# shellcheck disable=SC2086,SC3047,SC3036,SC3010,SC3001,SC3060,SC3015
 # alpine 默认使用 busybox ash
 # 注意 bash 和 ash 以下语句结果不同
 # [[ a = '*a' ]] && echo 1
@@ -1263,6 +1263,13 @@ networking = {
 EOF
 
     for ethx in $(get_eths); do
+        # ipv4 使用 DHCP 时显式开启 useDHCP
+        if is_dhcpv4; then
+            cat <<EOF >>$conf_file
+  interfaces.$ethx.useDHCP = true;
+EOF
+        fi
+
         # ipv4
         if is_staticv4; then
             get_netconf_to ipv4_addr
@@ -2535,6 +2542,22 @@ is_xda_gt_2t() {
     [ "$disk_size" -gt "$disk_2t" ]
 }
 
+is_ends_with_digit() {
+    [[ "$1" =~ [0-9]$ ]]
+}
+
+xda() {
+    if [ -n "$1" ]; then
+        if is_ends_with_digit "$xda"; then
+            echo "${xda}p$1"
+        else
+            echo "${xda}$1"
+        fi
+    else
+        echo "$xda"
+    fi
+}
+
 create_part() {
     # 除了 dd 都会用到
     info "Create Part"
@@ -2549,7 +2572,6 @@ create_part() {
     # TODO: 先检测iso链接/各种链接
     # wipefs -a /dev/$xda
 
-    # xda*1 星号用于 nvme0n1p1 的字母 p
     # shellcheck disable=SC2154
     if [ "$distro" = windows ]; then
         if ! size_bytes=$(get_link_file_size "$iso"); then
@@ -2582,10 +2604,10 @@ create_part() {
                 set 3 msftdata on
             update_part
 
-            mkfs.fat -n efi /dev/$xda*1                           #1 efi
-            dd if=/dev/zero of="$(ls /dev/$xda*2)" bs=1M count=16 #2 msr
-            mkfs.ntfs -f -F -L os /dev/$xda*3                     #3 os
-            mkfs.ntfs -f -F -L installer /dev/$xda*4              #4 installer
+            mkfs.fat -n efi "/dev/$(xda 1)"                   #1 efi
+            dd if=/dev/zero of="/dev/$(xda 2)" bs=1M count=16 #2 msr
+            mkfs.ntfs -f -F -L os "/dev/$(xda 3)"             #3 os
+            mkfs.ntfs -f -F -L installer "/dev/$(xda 4)"      #4 installer
         else
             # bios + mbr 启动盘最大可用 2t
             if is_xda_gt_2t; then
@@ -2602,13 +2624,10 @@ create_part() {
                 set 1 boot on
             update_part
 
-            mkfs.ntfs -f -F -L os /dev/$xda*1        #1 os
-            mkfs.ntfs -f -F -L installer /dev/$xda*2 #2 installer
+            mkfs.ntfs -f -F -L os "/dev/$(xda 1)"        #1 os
+            mkfs.ntfs -f -F -L installer "/dev/$(xda 2)" #2 installer
         fi
     elif [ "$distro" = fnos ]; then
-        # 先用 100% 分区安装后再缩小没意义，因为小硬盘用 100% 还是装不了
-        # 因此直接用用户输入的分区大小
-
         # 1. 官方安装器对系统盘大小的定义包含引导分区大小
         # 2. 官方 efi 用的是 1MiB-100M，但我们用 1MiB-101MiB
 
@@ -2640,47 +2659,53 @@ create_part() {
         # The location 20480MiB is outside of the device /dev/vda.
         # 但是 100% 分区后 end 就是 20480MiB
 
-        os_part_end=${expect_m}MiB
         if [ "$expect_m" -ge "$max_can_use_m" ]; then
-            echo "Expect size is equal/greater than max size. Setting to 100%"
-            os_part_end=100%
+            warn "Expect size is equal/greater than max size. Uses max size."
+            NEED_SHRINK_FNOS_OS_PART=false
+            FNOS_OS_PART_END_M=$max_can_use_m
+        else
+            NEED_SHRINK_FNOS_OS_PART=true
+            FNOS_OS_PART_END_M=$expect_m
         fi
 
-        # 需关闭这几个特性，否则 grub 无法识别
+        # fnos 的 grub 是 debian 11 的
+        # 需关闭 metadata_csum_seed，否则 grub 会进入 grub rescue 模式，但 efi 下一切正常
+        # orphan_file 不需要关，但是官方安装器安装的系统分区没有这个特性，因此我们也关闭它
         ext4_opts="-O ^metadata_csum_seed,^orphan_file"
+
         if is_efi; then
             parted /dev/$xda -s -- \
                 mklabel gpt \
                 mkpart BOOT fat32 1MiB 101MiB \
-                mkpart SYSTEM ext4 101MiB $os_part_end \
+                mkpart SYSTEM ext4 101MiB 100% \
                 set 1 esp on
             update_part
 
-            mkfs.fat /dev/$xda*1                #1 efi
-            mkfs.ext4 -F $ext4_opts /dev/$xda*2 #2 os + installer
+            mkfs.fat "/dev/$(xda 1)"                #1 efi
+            mkfs.ext4 -F $ext4_opts "/dev/$(xda 2)" #2 os + installer
         elif is_xda_gt_2t; then
             # bios > 2t
             # 官方安装器是 mkpart BOOT 1M 100M，无论 esp 或者 bios_grub 都用这个分区和大小
             parted /dev/$xda -s -- \
                 mklabel gpt \
                 mkpart BOOT ext4 1MiB 101MiB \
-                mkpart SYSTEM ext4 101MiB $os_part_end \
+                mkpart SYSTEM ext4 101MiB 100% \
                 set 1 bios_grub on
             update_part
 
-            echo                                #1 bios_boot
-            mkfs.ext4 -F $ext4_opts /dev/$xda*2 #2 os + installer
+            echo                                    #1 bios_boot
+            mkfs.ext4 -F $ext4_opts "/dev/$(xda 2)" #2 os + installer
         else
             # bios
             parted /dev/$xda -s -- \
                 mklabel msdos \
                 mkpart primary 1MiB 101MiB \
-                mkpart primary 101MiB $os_part_end \
+                mkpart primary 101MiB 100% \
                 set 2 boot on
             update_part
 
-            echo                                #1 官方安装有这个分区
-            mkfs.ext4 -F $ext4_opts /dev/$xda*2 #2 os + installer
+            echo                                    #1 官方安装有这个分区
+            mkfs.ext4 -F $ext4_opts "/dev/$(xda 2)" #2 os + installer
         fi
     elif is_use_cloud_image; then
         installer_part_size="$(get_cloud_image_part_size)"
@@ -2700,9 +2725,9 @@ create_part() {
                     set 1 esp on
                 update_part
 
-                mkfs.fat -n efi /dev/$xda*1           #1 efi
-                echo                                  #2 os 用目标系统的格式化工具
-                mkfs.ext4 -F -L installer /dev/$xda*3 #3 installer
+                mkfs.fat -n efi "/dev/$(xda 1)"           #1 efi
+                echo                                      #2 os 用目标系统的格式化工具
+                mkfs.ext4 -F -L installer "/dev/$(xda 3)" #3 installer
             else
                 parted /dev/$xda -s -- \
                     mklabel gpt \
@@ -2712,9 +2737,9 @@ create_part() {
                     set 1 bios_grub on
                 update_part
 
-                echo                                  #1 bios_boot
-                echo                                  #2 os 用目标系统的格式化工具
-                mkfs.ext4 -F -L installer /dev/$xda*3 #3 installer
+                echo                                      #1 bios_boot
+                echo                                      #2 os 用目标系统的格式化工具
+                mkfs.ext4 -F -L installer "/dev/$(xda 3)" #3 installer
             fi
         else
             # 使用 dd qcow2
@@ -2725,8 +2750,8 @@ create_part() {
                 mkpart '" "' ext4 -$installer_part_size 100%
             update_part
 
-            mkfs.ext4 -F -L os /dev/$xda*1        #1 os
-            mkfs.ext4 -F -L installer /dev/$xda*2 #2 installer
+            mkfs.ext4 -F -L os "/dev/$(xda 1)"        #1 os
+            mkfs.ext4 -F -L installer "/dev/$(xda 2)" #2 installer
         fi
     elif [ "$distro" = alpine ] || [ "$distro" = arch ] || [ "$distro" = gentoo ] ||
         [ "$distro" = nixos ] || [ "$distro" = aosc ]; then
@@ -2743,8 +2768,8 @@ create_part() {
                 set 1 boot on
             update_part
 
-            mkfs.fat /dev/$xda*1                #1 efi
-            mkfs.ext4 -F $ext4_opts /dev/$xda*2 #2 os
+            mkfs.fat "/dev/$(xda 1)"                #1 efi
+            mkfs.ext4 -F $ext4_opts "/dev/$(xda 2)" #2 os
         elif is_xda_gt_2t; then
             # bios > 2t
             parted /dev/$xda -s -- \
@@ -2754,8 +2779,8 @@ create_part() {
                 set 1 bios_grub on
             update_part
 
-            echo                                #1 bios_boot
-            mkfs.ext4 -F $ext4_opts /dev/$xda*2 #2 os
+            echo                                    #1 bios_boot
+            mkfs.ext4 -F $ext4_opts "/dev/$(xda 2)" #2 os
         else
             # bios
             parted /dev/$xda -s -- \
@@ -2764,7 +2789,7 @@ create_part() {
                 set 1 boot on
             update_part
 
-            mkfs.ext4 -F $ext4_opts /dev/$xda*1 #1 os
+            mkfs.ext4 -F $ext4_opts "/dev/$(xda 1)" #1 os
         fi
     else
         # 安装红帽系或ubuntu
@@ -2797,9 +2822,9 @@ create_part() {
                 set 1 boot on
             update_part
 
-            mkfs.fat -n efi /dev/$xda*1                      #1 efi
-            mkfs.ext4 -F -L os /dev/$xda*2                   #2 os
-            mkfs.ext4 -F -L installer $ext4_opts /dev/$xda*3 #2 installer
+            mkfs.fat -n efi "/dev/$(xda 1)"                      #1 efi
+            mkfs.ext4 -F -L os "/dev/$(xda 2)"                   #2 os
+            mkfs.ext4 -F -L installer $ext4_opts "/dev/$(xda 3)" #2 installer
         elif is_xda_gt_2t; then
             # bios > 2t
             parted /dev/$xda -s -- \
@@ -2810,9 +2835,9 @@ create_part() {
                 set 1 bios_grub on
             update_part
 
-            echo                                             #1 bios_boot
-            mkfs.ext4 -F -L os /dev/$xda*2                   #2 os
-            mkfs.ext4 -F -L installer $ext4_opts /dev/$xda*3 #3 installer
+            echo                                                 #1 bios_boot
+            mkfs.ext4 -F -L os "/dev/$(xda 2)"                   #2 os
+            mkfs.ext4 -F -L installer $ext4_opts "/dev/$(xda 3)" #3 installer
         else
             # bios
             parted /dev/$xda -s -- \
@@ -2822,8 +2847,8 @@ create_part() {
                 set 1 boot on
             update_part
 
-            mkfs.ext4 -F -L os /dev/$xda*1                   #1 os
-            mkfs.ext4 -F -L installer $ext4_opts /dev/$xda*2 #2 installer
+            mkfs.ext4 -F -L os "/dev/$(xda 1)"                   #1 os
+            mkfs.ext4 -F -L installer $ext4_opts "/dev/$(xda 2)" #2 installer
         fi
         update_part
     fi
@@ -3918,7 +3943,9 @@ modify_os_on_disk() {
 
     mkdir -p /os
     # 按分区容量大到小，依次寻找系统分区
-    for part in $(lsblk /dev/$xda*[0-9] --sort SIZE -no NAME | tac); do
+    # lsblk /dev/mmcblk0* 会列出 mmcblk0boot0 mmcblk0boot1
+    # lsblk /dev/mmcblk0  不会列出 mmcblk0boot0 mmcblk0boot1
+    for part in $(lsblk /dev/$xda --filter 'TYPE == "part"' --sort SIZE -no NAME | tac); do
         # btrfs挂载的是默认子卷，如果没有默认子卷，挂载的是根目录
         # fedora 云镜像没有默认子卷，且系统在root子卷中
         if mount -o ro /dev/$part /os; then
@@ -4448,7 +4475,7 @@ install_fnos() {
 
     # 挂载 /os
     mkdir -p /os
-    mount /dev/$xda*2 /os
+    mount "/dev/$(xda 2)" /os
 
     # 下载并挂载 iso
     mkdir -p /os/installer /iso
@@ -4489,7 +4516,7 @@ install_fnos() {
     # 挂载 /os/boot/efi
     if is_efi; then
         mkdir -p /os/boot/efi
-        mount -o "$(echo "$fstab_line_efi" | awk '{print $4}')" /dev/$xda*1 /os/boot/efi
+        mount -o "$(echo "$fstab_line_efi" | awk '{print $4}')" "/dev/$(xda 1)" /os/boot/efi
     fi
 
     # 复制系统
@@ -4500,6 +4527,36 @@ install_fnos() {
 
     # 删除 installer (trimfs.tgz)
     rm -rf /os/installer
+
+    # 缩小分区
+    if $NEED_SHRINK_FNOS_OS_PART; then
+        info "Shrink fnos os partition"
+
+        # 取消挂载
+        if is_efi; then
+            umount /os/boot/efi
+        fi
+        umount /os
+
+        # 101M 是 efi + bios_grub 分区，即使 bios 引导飞牛官方安装器也会生成一个 100M 预留分区
+        # 99M 是预留的文件系统和分区表的差值
+        # 一共 200M
+        apk add e2fsprogs-extra parted
+        e2fsck -p -f "/dev/$(xda 2)"
+        resize2fs "/dev/$(xda 2)" "$((FNOS_OS_PART_END_M - 200))M"
+        update_part
+        printf "yes" | parted /dev/$xda resizepart 2 "$((FNOS_OS_PART_END_M))MiB" ---pretend-input-tty
+        update_part
+        resize2fs "/dev/$(xda 2)"
+        update_part
+        apk del e2fsprogs-extra parted
+
+        # 重新挂载
+        mount "/dev/$(xda 2)" /os
+        if is_efi; then
+            mount -o "$(echo "$fstab_line_efi" | awk '{print $4}')" "/dev/$(xda 1)" /os/boot/efi
+        fi
+    fi
 
     # 挂载 proc sys dev
     mount_pseudo_fs /os
@@ -4520,7 +4577,7 @@ install_fnos() {
     # fstab
     {
         # /
-        uuid=$(lsblk /dev/$xda*2 -no UUID)
+        uuid=$(lsblk "/dev/$(xda 2)" -no UUID)
         echo "$fstab_line_os" | sed "s/%s/$uuid/"
 
         # swapfile
@@ -4529,7 +4586,7 @@ install_fnos() {
 
         # /boot/efi
         if is_efi; then
-            uuid=$(lsblk /dev/$xda*1 -no UUID)
+            uuid=$(lsblk "/dev/$(xda 1)" -no UUID)
             echo "$fstab_line_efi" | sed "s/%s/$uuid/"
         fi
     } >$os_dir/etc/fstab
@@ -4655,7 +4712,7 @@ install_qcow_by_copy() {
         if is_efi; then
             # centos/oracle 要创建efi条目
             if ! grep /boot/efi /os/etc/fstab; then
-                efi_part_uuid=$(lsblk /dev/$xda*1 -no UUID)
+                efi_part_uuid=$(lsblk "/dev/$(xda 1)" -no UUID)
                 echo "UUID=$efi_part_uuid /boot/efi vfat $efi_mount_opts 0 0" >>/os/etc/fstab
             fi
         else
@@ -4990,7 +5047,7 @@ EOF
         # 因为 24.04 fsuuid 对应 boot 分区
         efi_grub_cfg=$os_dir/boot/efi/EFI/ubuntu/grub.cfg
         if is_efi; then
-            os_uuid=$(lsblk -rno UUID /dev/$xda*2)
+            os_uuid=$(lsblk -rno UUID "/dev/$(xda 2)")
             sed -Ei "s|[0-9a-f-]{36}|$os_uuid|i" $efi_grub_cfg
 
             # 24.04 移除 boot 分区后，需要添加 /boot 路径
@@ -5004,7 +5061,7 @@ EOF
         if [ -e $force_partuuid_cfg ]; then
             if is_virt; then
                 # 更改写死的 partuuid
-                os_part_uuid=$(lsblk -rno PARTUUID /dev/$xda*2)
+                os_part_uuid=$(lsblk -rno PARTUUID "/dev/$(xda 2)")
                 sed -i "s/^GRUB_FORCE_PARTUUID=.*/GRUB_FORCE_PARTUUID=$os_part_uuid/" $force_partuuid_cfg
             else
                 # 独服不应该使用 initrdless boot
@@ -5155,8 +5212,8 @@ EOF
     mount_nouuid /dev/$os_part /nbd/
     mount_pseudo_fs /nbd/
     case "$os_part_fstype" in
-    ext4) chroot /nbd mkfs.ext4 -F -L "$os_part_label" -U "$os_part_uuid" /dev/$xda*2 ;;
-    xfs) chroot /nbd mkfs.xfs -f -L "$os_part_label" -m uuid=$os_part_uuid /dev/$xda*2 ;;
+    ext4) chroot /nbd mkfs.ext4 -F -L "$os_part_label" -U "$os_part_uuid" "/dev/$(xda 2)" ;;
+    xfs) chroot /nbd mkfs.xfs -f -L "$os_part_label" -m uuid=$os_part_uuid "/dev/$(xda 2)" ;;
     esac
     umount -R /nbd/
 
@@ -5164,7 +5221,7 @@ EOF
 
     # 创建并挂载 /os
     mkdir -p /os
-    mount -o noatime /dev/$xda*2 /os/
+    mount -o noatime "/dev/$(xda 2)" /os/
 
     # 如果是 efi 则创建 /os/boot/efi
     # 如果镜像有 efi 分区也创建 /os/boot/efi，用于复制 efi 分区的文件
@@ -5175,7 +5232,7 @@ EOF
         # 预先挂载 /os/boot/efi 因为可能 boot 和 efi 在同一个分区（openeuler 24.03 arm）
         # 复制 boot 时可以会复制 efi 的文件
         if is_efi; then
-            mount -o $efi_mount_opts /dev/$xda*1 /os/boot/efi/
+            mount -o $efi_mount_opts "/dev/$(xda 1)" /os/boot/efi/
         fi
     fi
 
@@ -5226,7 +5283,7 @@ EOF
     if is_efi && [ -n "$efi_part_uuid" ] && ! [ "$efi_part" = "$os_part" ]; then
         info "Copy efi partition uuid"
         apk add mtools
-        mlabel -N "$(echo $efi_part_uuid | sed 's/-//')" -i /dev/$xda*1 ::$efi_part_label
+        mlabel -N "$(echo $efi_part_uuid | sed 's/-//')" -i "/dev/$(xda 1)" ::$efi_part_label
         apk del mtools
         update_part
     fi
@@ -5240,9 +5297,9 @@ EOF
 
     # 重新挂载 /os /boot/efi
     info "Re-mount disk"
-    mount -o noatime /dev/$xda*2 /os/
+    mount -o noatime "/dev/$(xda 2)" /os/
     if is_efi; then
-        mount -o $efi_mount_opts /dev/$xda*1 /os/boot/efi/
+        mount -o $efi_mount_opts "/dev/$(xda 1)" /os/boot/efi/
     fi
 
     # 创建 swap
@@ -5462,22 +5519,22 @@ resize_after_install_cloud_image() {
         ext4)
             # debian ci
             apk add e2fsprogs-extra
-            e2fsck -p -f /dev/$xda*$last_part_num
-            resize2fs /dev/$xda*$last_part_num
+            e2fsck -p -f "/dev/$(xda $last_part_num)"
+            resize2fs "/dev/$(xda $last_part_num)"
             apk del e2fsprogs-extra
             ;;
         xfs)
             # opensuse ci
             apk add xfsprogs-extra
-            mount /dev/$xda*$last_part_num /os
-            xfs_growfs /dev/$xda*$last_part_num
+            mount "/dev/$(xda $last_part_num)" /os
+            xfs_growfs "/dev/$(xda $last_part_num)"
             umount /os
             apk del xfsprogs-extra
             ;;
         btrfs)
             # fedora ci
             apk add btrfs-progs
-            mount /dev/$xda*$last_part_num /os
+            mount "/dev/$(xda $last_part_num)" /os
             btrfs filesystem resize max /os
             umount /os
             apk del btrfs-progs
@@ -5485,8 +5542,8 @@ resize_after_install_cloud_image() {
         ntfs)
             # windows dd
             apk add ntfs-3g-progs
-            echo y | ntfsresize /dev/$xda*$last_part_num
-            ntfsfix -d /dev/$xda*$last_part_num
+            echo y | ntfsresize "/dev/$(xda $last_part_num)"
+            ntfsfix -d "/dev/$(xda $last_part_num)"
             apk del ntfs-3g-progs
             ;;
         esac
@@ -5507,12 +5564,12 @@ mount_part_basic_layout() {
 
     # 挂载系统分区
     mkdir -p $os_dir
-    mount -t ext4 /dev/${xda}*${os_part_num} $os_dir
+    mount -t ext4 "/dev/$(xda $os_part_num)" $os_dir
 
     # 挂载 efi 分区
     if is_efi; then
         mkdir -p $efi_dir
-        mount -t vfat -o umask=077 /dev/${xda}*1 $efi_dir
+        mount -t vfat -o umask=077 "/dev/$(xda 1)" $efi_dir
     fi
 }
 
@@ -5852,7 +5909,7 @@ install_windows() {
         while true; do
             # 匹配成功
             # 改成正确的大小写
-            if matched_image_name=$(echo "$all_image_names" | grep -ix "$image_name"); then
+            if matched_image_name=$(printf '%s\n' "$all_image_names" | grep -Fix "$image_name"); then
                 image_name=$matched_image_name
                 image_index=$(wiminfo "$iso_install_wim" "$image_name" | grep 'Index:' | awk '{print $NF}')
                 break
@@ -6478,9 +6535,9 @@ EOF
 
         apk add msitools
 
-        # 8.4.3 的 xenbus 挑创建实例时的初始系统
-        # 初始系统为 windows 的实例支持 8.4.3
-        # 初始系统为 linux 的实例不支持 8.4.3
+        # 8.4.3+ 的 xenbus 驱动挑创建实例时的初始系统
+        # 初始系统为 windows 的实例支持 8.4.3+
+        # 初始系统为 linux 的实例不支持 8.4.3+
 
         # 初始系统为 linux + 安装 8.4.3
         # 如果用 msi 安装，则不会启用 xenbus，结果是能启动但无法上网
@@ -6495,11 +6552,16 @@ EOF
             6.1) $support_sha256 && echo 8.3.5 || echo 8.3.2 ;;
             6.2 | 6.3)
                 case "$hypervisor_vendor" in
-                Microsoft) echo 8.4.3 ;; # 实例初始系统为 Windows，能使用 8.4.3
-                Xen) echo 8.3.5 ;;       # 实例初始系统为 Linux，不能使用 8.4.3
+                Xen) echo 8.3.5 ;;       # 实例初始系统为 Linux
+                Microsoft) echo 8.4.3 ;; # 实例初始系统为 Windows
                 esac
                 ;;
-            *) echo Latest ;;
+            *)
+                case "$hypervisor_vendor" in
+                Xen) echo 8.3.5 ;;        # 实例初始系统为 Linux
+                Microsoft) echo Latest ;; # 实例初始系统为 Windows
+                esac
+                ;;
             esac
         )
 

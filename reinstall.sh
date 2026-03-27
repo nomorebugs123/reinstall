@@ -910,17 +910,7 @@ get_windows_iso_link() {
     get_label_msdn() {
         if [ -n "$server" ]; then
             case "$version" in
-            2008 | '2008 r2')
-                case "$edition" in
-                serverweb | serverwebcore) echo _ ;;
-                serverstandard | serverstandardcore) echo _ ;;
-                serverenterprise | serverenterprisecore) echo _ ;;
-                serverdatacenter | serverdatacentercore) echo _ ;;
-                esac
-                ;;
-            # massgrave 不提供 2012 下载
-            '2012 r2' | \
-                2016 | 2019 | 2022 | 2025)
+            2019 | 2022 | 2025)
                 case "$edition" in
                 serverstandard | serverstandardcore) echo _ ;;
                 serverdatacenter | serverdatacentercore) echo _ ;;
@@ -929,39 +919,6 @@ get_windows_iso_link() {
             esac
         else
             case "$version" in
-            vista)
-                case "$edition" in
-                starter)
-                    case "$arch_win" in
-                    x86) echo _ ;;
-                    esac
-                    ;;
-                homebasic | homepremium | ultimate) echo _ ;;
-                business | enterprise) echo "$edition" ;;
-                esac
-                ;;
-            7)
-                case "$edition" in
-                starter)
-                    case "$arch_win" in
-                    x86) echo starter ;;
-                    esac
-                    ;;
-                homebasic)
-                    case "$arch_win" in
-                    x86) echo "home basic" ;;
-                    esac
-                    ;;
-                homepremium) echo "home premium" ;;
-                professional | enterprise | ultimate) echo "$edition" ;;
-                esac
-                ;;
-            8 | 8.1)
-                case "$edition" in
-                '') echo _ ;; # windows 8.x core
-                pro | enterprise) echo "$edition" ;;
-                esac
-                ;;
             10)
                 case "$edition" in
                 home | 'home single language') echo consumer ;;
@@ -975,9 +932,8 @@ get_windows_iso_link() {
                 # iot
                 'iot enterprise') echo 'iot enterprise' ;;
                 # iot ltsc
-                'iot enterprise ltsc 2019' | 'iot enterprise ltsc 2021') echo "$edition" ;;
+                'iot enterprise ltsc 2021') echo "$edition" ;;
                 # ltsc
-                'enterprise 2015 ltsb' | 'enterprise 2016 ltsb' | 'enterprise ltsc 2019') echo "$edition" ;;
                 'enterprise ltsc 2021')
                     # arm64 的 enterprise ltsc 2021 要下载 iot enterprise ltsc 2021 iso
                     case "$arch_win" in
@@ -1038,13 +994,7 @@ get_windows_iso_link() {
     # win10 22h2 arm 有每月发布的 iso，因此不从 msdl 下载
     # win10/11 ltsc 没有每月发布的 iso，但是 msdl 没有 ltsc 版本
     get_label_msdl() {
-        case "$version" in
-        8.1)
-            case "$edition" in
-            '' | pro) echo _ ;;
-            esac
-            ;;
-        esac
+        :
     }
 
     get_page() {
@@ -1056,7 +1006,7 @@ get_windows_iso_link() {
             echo server
         else
             case "$version" in
-            vista | 7 | 8 | 8.1 | 10 | 11)
+            10 | 11)
                 echo "$version"
                 ;;
             esac
@@ -1073,9 +1023,7 @@ get_windows_iso_link() {
     label_vlsc=$(get_label_vlsc)
     page=$(get_page)
 
-    if [ "$page" = vista ]; then
-        page_url=https://massgrave.dev/windows_vista__links
-    elif [ "$page" = server ]; then
+    if [ "$page" = server ]; then
         page_url=https://massgrave.dev/windows-server-links
     else
         page_url=https://massgrave.dev/windows_${page}_links
@@ -2321,7 +2269,7 @@ check_ram() {
 is_efi() {
     if is_in_windows; then
         # bcdedit | grep -qi '^path.*\.efi'
-        mountvol | grep -q --text 'EFI'
+        mountvol | grep -q -a 'EFI'
     else
         [ -d /sys/firmware/efi ]
     fi
@@ -2372,7 +2320,7 @@ is_use_local_extlinux() {
 is_mbr_using_grub() {
     find_main_disk
     # 各发行版不一定自带 strings hexdump xxd od 命令
-    head -c 440 /dev/$xda | grep --text -iq 'GRUB'
+    head -c 440 /dev/$xda | grep -a -iq 'GRUB'
 }
 
 to_upper() {
@@ -2966,7 +2914,7 @@ install_grub_linux_efi() {
     info 'download grub efi'
 
     # fedora 39 的 efi 无法识别 opensuse tumbleweed 的 xfs
-    efi_distro=opensuse
+    efi_distro=fedora
 
     grub_efi=$(get_grub_efi_filename)
 
@@ -3116,7 +3064,7 @@ install_grub_win() {
         # 添加引导
         # 脚本可能不是首次运行，所以先删除原来的
         id='{1c41f649-1637-52f1-aea8-f96bfebeecc8}'
-        bcdedit /enum all | grep --text $id && bcdedit /delete $id
+        bcdedit /enum all | grep -a $id && bcdedit /delete $id
         bcdedit /create $id /d "$(get_entry_name)" /application bootsector
         bcdedit /set $id device partition=$c:
         bcdedit /set $id path \\g2ldr
@@ -3917,7 +3865,7 @@ This script is outdated, please download reinstall.sh again.
     # -c    Identical to "-H newc", use the new (SVR4)
     #       portable format.If you wish the old portable
     #       (ASCII) archive format, use "-H odc" instead.
-    find . | cpio --quiet -o -H newc | gzip -1 >/reinstall-initrd
+    find . | cpio --quiet -o -H newc -R 0:0 | gzip -1 >/reinstall-initrd
     cd - >/dev/null
 }
 
@@ -3963,7 +3911,6 @@ remove_useless_initrd_files() {
             net/wireless \
             net/bluetooth \
             drivers/hid \
-            drivers/mmc \
             drivers/mtd \
             drivers/usb \
             drivers/ssb \
@@ -4199,12 +4146,12 @@ remove_exist_reinstall() {
             remove_exist_reinstall_efi_dir
 
             bcdedit /set '{fwbootmgr}' bootsequence '{bootmgr}'
-            bcdedit /enum bootmgr | grep --text -B3 'reinstall' | awk '{print $2}' | grep '{.*}' |
+            bcdedit /enum bootmgr | grep -a -B3 'reinstall' | awk '{print $2}' | grep '{.*}' |
                 xargs -I {} cmd /c bcdedit /delete {}
         else
             # bios
             id='{1c41f649-1637-52f1-aea8-f96bfebeecc8}'
-            if bcdedit /enum all | grep --text "$id"; then
+            if bcdedit /enum all | grep -a "$id"; then
                 bcdedit /delete "$id"
             fi
         fi
