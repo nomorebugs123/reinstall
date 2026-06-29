@@ -49,29 +49,22 @@ if exist X:\custom_drivers\ (
 rem 等待加载分区
 call :sleep 5000
 echo rescan | diskpart
-
-rem 判断 efi 还是 bios
-rem 或者用 https://learn.microsoft.com/windows-hardware/manufacture/desktop/boot-to-uefi-mode-or-legacy-bios-mode
-rem pe 下没有 mountvol
-echo list vol | diskpart | find "efi" && (
-    set BootType=efi
-) || (
-    set BootType=bios
-)
+call :sleep 5000
 
 rem 获取 ProductType
 rem for /f "tokens=3" %%a in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\ProductOptions" /v ProductType') do (
 rem     set "ProductType=%%a"
 rem )
 
-rem 获取 BuildNumber
-for /f "tokens=3" %%a in ('reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion" /v CurrentBuildNumber') do (
-    set "BuildNumber=%%a"
+rem 获取 installer 卷 id
+for /f "tokens=2" %%a in ('echo list vol ^| diskpart ^| find " installer "') do (
+    set "VolIndex=%%a"
 )
 
-rem 获取 installer 卷 id
-for /f "tokens=2" %%a in ('echo list vol ^| diskpart ^| find "installer"') do (
-    set "VolIndex=%%a"
+rem 及时退出
+if "%VolIndex%"=="" (
+    echo Error: Cannot find installer partition. >&2
+    exit /b 1
 )
 
 rem 将 installer 分区设为 Y 盘
@@ -87,11 +80,63 @@ rem wmic pagefile
 
 rem 获取主硬盘 id
 rem vista pe 没有 wmic，因此用 diskpart
-(echo select vol %VolIndex% & echo list disk) | diskpart | find "* Disk " > X:\disk.txt
-for /f "tokens=3" %%a in (X:\disk.txt) do (
-    set "DiskIndex=%%a"
+
+rem 法语版 win7 diskpart 始终输出法语，即使设置了 chcp 437，因此不能用这个方法
+rem (echo select vol %VolIndex% & echo list disk) | diskpart | find "* Disk " > X:\disk.txt
+rem for /f "tokens=3" %%a in (X:\disk.txt) do (
+rem     set "DiskIndex=%%a"
+rem )
+
+rem PE 下没有 findstr，因此不能从 diskpart 的输出直接选出开头为 * 的行，要用复杂的方法取出磁盘编号
+
+rem 输出 diskpart 结果到文件
+(echo select vol %VolIndex% & echo list disk) | diskpart | find "* " > X:\disk.txt
+type X:\disk.txt
+
+rem 逐行读取文件
+setlocal enabledelayedexpansion
+for /f "delims=" %%a in (X:\disk.txt) do (
+    set "line=%%a"
+
+    rem 寻找 * 开头的行
+    call :is_x_starts_with_char_y "!line!" "*" && (
+        rem 注意在 for %%b in (!safe_line!) do 中 * 会展开成文件列表，因此要先删除 *
+        rem 下面用的方法是用 * 作为分割符，获取 * 后面的第一列
+
+        rem for /f 会自动忽略行首的分隔符
+        for /f "tokens=1 delims=*" %%i in ("!line!") do (
+            set "safe_line=%%i"
+        )
+
+        rem 遍历每一列，找到是数字的那一列，就是磁盘编号
+        for %%b in (!safe_line!) do (
+            call :is_number "%%b" && (
+                set "DiskIndex=%%b"
+                goto :found_main_disk
+            )
+        )
+
+        rem 普通 for 是把“一段话”里的“每个词”排成队，让一个变量（%%b）轮流去当这些词
+        rem for /f   是把“一段话”拆成“几个零件”存在不同的变量里（%%i, %%j...）
+    )
 )
+
+:not_found_main_disk
+echo Error: Cannot find main disk. >&2
+exit /b 1
+
+:found_main_disk
 del X:\disk.txt
+endlocal & set "DiskIndex=%DiskIndex%"
+
+rem 判断 efi 还是 bios
+rem 或者用 https://learn.microsoft.com/windows-hardware/manufacture/desktop/boot-to-uefi-mode-or-legacy-bios-mode
+rem pe 下没有 mountvol
+echo list vol | diskpart | find " efi " && (
+    set BootType=efi
+) || (
+    set BootType=bios
+)
 
 rem 这个变量会被 trans.sh 修改
 set is4kn=0
@@ -105,6 +150,7 @@ rem 重新分区/格式化
 (if "%BootType%"=="efi" (
     echo select disk %DiskIndex%
 
+    rem del
     echo select part 1
     echo delete part override
     echo select part 2
@@ -112,26 +158,35 @@ rem 重新分区/格式化
     echo select part 3
     echo delete part override
 
+    rem 1
     echo create part efi size=%EFISize%
     echo format fs=fat32 quick
 
+    rem 2
     echo create part msr size=16
 
+    rem 3
     echo create part primary
     echo format fs=ntfs quick
     rem echo assign letter=Z
+
 ) else (
     echo select disk %DiskIndex%
 
+    rem del
     echo select part 1
-    rem echo delete part override
-    rem echo create part primary
+    echo delete part override
+
+    rem 1
+    echo create part primary
     echo format fs=ntfs quick
     echo active
     rem echo assign letter=Z
+
 )) > X:\diskpart.txt
 
-rem 使用 diskpart /s ，出错不会执行剩下的 diskpart 命令
+rem 使用 diskpart /s ，出错后不会执行剩下的 diskpart 命令
+rem 但是返回值始终是 0
 diskpart /s X:\diskpart.txt
 del X:\diskpart.txt
 
@@ -139,6 +194,11 @@ rem 盘符
 rem X boot.wim (ram)
 rem Y installer
 rem Z os
+
+rem 获取 BuildNumber
+for /f "tokens=3" %%a in ('reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion" /v CurrentBuildNumber') do (
+    set "BuildNumber=%%a"
+)
 
 rem 旧版安装程序会自动在C盘设置虚拟内存，新版安装程序(24h2)不会
 rem 如果不创建虚拟内存，1g 内存的机器安装时会报错/杀进程
@@ -180,11 +240,25 @@ rem 运行 ramdisk X:\setup.exe 的话
 rem vista 会找不到安装源
 rem server 23h2 会无法运行
 rem 使用 /installfrom 可以解决?
-if "%ForceOldSetup%"=="1" (
+
+rem 有的精简版 iso install.wim 根目录没有 setup.exe
+rem https://github.com/bin456789/reinstall/issues/578
+
+if "%ForceOldSetup%"=="1" if exist Y:\sources\setup.exe (
     set setup=Y:\sources\setup.exe
-) else (
-    set setup=Y:\setup.exe
+    goto :SetupExeFound
 )
+if exist Y:\setup.exe (
+    set setup=Y:\setup.exe
+) else if exist Y:\sources\setup.exe (
+    set setup=Y:\sources\setup.exe
+) else if exist X:\setup.exe (
+    set setup=X:\setup.exe
+) else (
+    echo "Error: setup.exe not found." >&2
+    exit /b 1
+)
+:SetupExeFound
 
 if "%EnableUnattended%"=="1" (
     set Unattended=/unattend:X:\windows.xml
@@ -222,6 +296,27 @@ echo on
 %setup% %ResizeRecoveryPartition% %EMS% %Unattended%
 exit /b
 
+
+
+
+
+:is_number
+rem 尝试转换字符串为数字，如果转换失败则说明不是数字
+rem 如果转换失败，num 是 0
+rem 这不影响参数是 0 时的判断
+set /a "num=%~1" >nul 2>nul
+if "%num%"=="%~1" (
+    exit /b 0
+)
+exit /b 1
+
+:is_x_starts_with_char_y
+set "tempStr=%~1"
+if "%tempStr:~0,1%"=="%~2" (
+   exit /b 0
+)
+exit /b 1
+
 :sleep
 rem 没有加载网卡驱动，无法用 ping 来等待
 rem 没有 timeout 命令
@@ -246,6 +341,12 @@ exit /b
 rem 不要查找 Class=SCSIAdapter 因为有些驱动等号两边有空格
 find /i "SCSIAdapter" "%~1" >nul
 if not errorlevel 1 (
+    rem 有 N 种方法安装驱动
+    rem 1. dism /online /add-driver /driver:"%~1"     # PE 不支持 /online 添加驱动
+    rem 2. pnputil -i -a "%~1"
+    rem 3. devcon
+    rem 4. dpinst
+    rem 5. drvload 官方推荐 https://learn.microsoft.com/windows-hardware/manufacture/desktop/drvload-command-line-options
     drvload "%~1"
 )
 exit /b
